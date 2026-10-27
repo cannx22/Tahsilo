@@ -1,0 +1,83 @@
+# Tahsilo — Coolify (Docker Compose build pack) ve düz Docker Compose için.
+#
+# Coolify: "Docker Compose" kaynağı olarak bu depoyu ekleyin. "web" servisine alan adı verin
+# (örn. https://tahsilo.firma.com:3000). SERVICE_* değişkenlerini Coolify otomatik üretir ve saklar.
+# Tek alan adı yeterlidir: web, /api/v1 isteklerini iç ağdan API'ye iletir; API dışarı açılmaz.
+#
+# Düz Docker Compose: .env dosyasına SERVICE_FQDN_WEB, SERVICE_PASSWORD_POSTGRES, SERVICE_PASSWORD_64_JWT,
+# SERVICE_PASSWORD_64_ENCRYPTION, SERVICE_PASSWORD_MOCKPOS değerlerini yazıp `docker compose up -d --build`.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tahsilo
+      POSTGRES_USER: tahsilo
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
+    volumes:
+      - tahsilo-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tahsilo -d tahsilo"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DATABASE_URL: postgresql://tahsilo:${SERVICE_PASSWORD_POSTGRES}@db:5432/tahsilo?schema=public
+      # Ödeme/banka dönüş adresleri ve webhook'lar web alan adı üzerinden gelir
+      WEB_URL: ${SERVICE_FQDN_WEB}
+      API_URL: ${SERVICE_FQDN_WEB}
+      JWT_SECRET: ${SERVICE_PASSWORD_64_JWT}
+      # DİKKAT: Bu değer kaybolursa şifreli belgeler ve bağlantı sırları açılamaz. Coolify'dan kopyalayıp ayrıca saklayın.
+      ENCRYPTION_KEY: ${SERVICE_PASSWORD_64_ENCRYPTION}
+      MOCKPOS_WEBHOOK_SECRET: ${SERVICE_PASSWORD_MOCKPOS}
+      STORAGE_DIR: /data/storage
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-Tahsilo <bildirim@tahsilo.local>}
+      BANK_SYNC_INTERVAL_MINUTES: ${BANK_SYNC_INTERVAL_MINUTES:-60}
+    volumes:
+      - tahsilo-storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        API_INTERNAL_URL: http://api:4000
+    restart: unless-stopped
+    environment:
+      # Coolify bu servise alan adı atar ve Traefik ile 3000 portuna yönlendirir
+      - SERVICE_FQDN_WEB_3000
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  tahsilo-pgdata:
+  tahsilo-storage:

@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tahsilo
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tahsilo?schema=public
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tahsilo_test?schema=public
+      JWT_SECRET: ci-only-jwt-secret-0123456789abcdefghijklmnop
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      WEB_URL: http://localhost:3000
+      MOCKPOS_WEBHOOK_SECRET: ci-mockpos-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Test veritabanını oluştur
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE tahsilo_test"
+      - run: npm ci
+      - name: Migration'lar
+        run: npm run db:deploy -w apps/api
+      - name: Tip denetimi
+        run: |
+          npx -w apps/api tsc --noEmit -p tsconfig.json
+          npx -w apps/web tsc --noEmit
+      - name: Testler (birim + uçtan uca)
+        run: npm test
+      - name: Derleme
+        run: npm run build
+      - name: Bağımlılık güvenlik denetimi (yüksek ve kritik)
+        run: npm audit --omit=dev --audit-level=critical
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test-and-build
+    steps:
+      - uses: actions/checkout@v4
+      - name: API imajı
+        run: docker build -f apps/api/Dockerfile -t tahsilo-api .
+      - name: Web imajı
+        run: docker build -f apps/web/Dockerfile -t tahsilo-web .

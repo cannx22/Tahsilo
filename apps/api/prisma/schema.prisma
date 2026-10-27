@@ -1,0 +1,851 @@
+// Tahsilo veri modeli
+// Kural: tenant'a ait her tablo `tenantId` taşır. Sorgular PrismaService içindeki
+// tenant kapsamı uzantısıyla otomatik olarak tenant'a sınırlanır (bkz. src/prisma).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Kiracı, kullanıcı, erişim ─────────────────────────
+
+model Tenant {
+  id                      String    @id @default(cuid())
+  name                    String
+  slug                    String    @unique
+  taxNumber               String?
+  baseCurrency            String    @default("TRY")
+  // Bu tutar ve altındaki giderler otomatik onaylanır (null: otomatik onay yok)
+  expenseAutoApproveLimit Decimal?  @db.Decimal(18, 2)
+  // Platform yöneticisi tarafından askıya alınan firmanın kullanıcıları giriş yapamaz
+  suspendedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  users User[]
+}
+
+// ───────────────────────── Platform yönetimi ─────────────────────────
+
+// Tahsilo platform yöneticileri tenant kullanıcılarından ayrıdır ve müşteri finansal verisine erişemez.
+model PlatformUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+model Branch {
+  id        String   @id @default(cuid())
+  tenantId  String
+  code      String
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  users        User[]
+  bankAccounts BankAccount[]
+  cardAccounts CardAccount[]
+  transactions FinancialTransaction[]
+  expenses     Expense[]
+  invoices     Invoice[]
+
+  @@unique([tenantId, code])
+}
+
+enum Role {
+  OWNER // Firma sahibi / finans yöneticisi
+  ACCOUNTANT // Muhasebe / finans uzmanı
+  MANAGER // Satın alma / ekip yöneticisi
+  EMPLOYEE // Çalışan / kart sahibi
+  OPERATIONS // Operasyon / tahsilat
+  AUDITOR // Denetçi (salt okunur)
+}
+
+model User {
+  id                 String      @id @default(cuid())
+  tenantId           String
+  tenant             Tenant      @relation(fields: [tenantId], references: [id])
+  email              String      @unique
+  name               String
+  passwordHash       String
+  role               Role
+  departmentId       String?
+  department         Department? @relation(fields: [departmentId], references: [id])
+  branchId           String?
+  branch             Branch?     @relation(fields: [branchId], references: [id])
+  emailNotifications Boolean     @default(true)
+  // TOTP sırrı şifreli saklanır
+  mfaSecretEnc       String?
+  mfaEnabled         Boolean     @default(false)
+  isActive           Boolean     @default(true)
+  lastLoginAt        DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  cards         CardAccount[]
+  notifications Notification[]
+
+  @@index([tenantId])
+}
+
+model Department {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  createdAt DateTime @default(now())
+
+  users    User[]
+  expenses Expense[]
+  budgets  Budget[]
+
+  @@unique([tenantId, name])
+}
+
+model CostCenter {
+  id        String   @id @default(cuid())
+  tenantId  String
+  code      String
+  name      String
+  createdAt DateTime @default(now())
+
+  expenses Expense[]
+
+  @@unique([tenantId, code])
+}
+
+// ───────────────────────── Banka ve kart ─────────────────────────
+
+enum DataSource {
+  CONNECTED // API'den alındı
+  IMPORTED // Dosyadan içe aktarıldı
+  MANUAL // Kullanıcı tarafından girildi
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  ERROR
+  EXPIRED
+  DISCONNECTED
+}
+
+enum BankConnectionStatus {
+  PENDING_CONSENT // kullanıcı bankada izin veriyor
+  ACTIVE
+  ERROR
+  EXPIRED // izin süresi doldu, yeniden izin gerekir
+  DISCONNECTED
+}
+
+model BankConnection {
+  id               String               @id @default(cuid())
+  tenantId         String
+  provider         String
+  name             String
+  status           BankConnectionStatus @default(PENDING_CONSENT)
+  // İzin akışını eşleştirmek için tahmin edilemez durum anahtarı
+  consentState     String?              @unique
+  // Erişim belirteci şifreli saklanır
+  tokenEnc         String?
+  consentExpiresAt DateTime?
+  lastSyncAt       DateTime?
+  lastError        String?
+  createdById      String
+  createdAt        DateTime             @default(now())
+
+  accounts BankAccount[]
+  jobs     SyncJob[]
+
+  @@index([tenantId])
+}
+
+model BankAccount {
+  id                String          @id @default(cuid())
+  tenantId          String
+  connectionId      String?
+  connection        BankConnection? @relation(fields: [connectionId], references: [id])
+  // Bankadaki hesap kimliği (bağlı hesaplarda)
+  externalAccountId String?
+  branchId          String?
+  branch            Branch?         @relation(fields: [branchId], references: [id])
+  bankName          String
+  name              String
+  ibanMasked        String?
+  currency          String          @default("TRY")
+  // Bakiye yalnızca banka/ekstreden gelen değerdir; tahmin burada tutulmaz.
+  balance           Decimal?        @db.Decimal(18, 2)
+  balanceAsOf       DateTime?
+  balanceSource     DataSource?
+  isActive          Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+
+  transactions FinancialTransaction[]
+  imports      ImportBatch[]
+
+  @@index([tenantId])
+}
+
+model CardAccount {
+  id           String   @id @default(cuid())
+  tenantId     String
+  name         String
+  bankName     String
+  // Tam kart numarası ve CVV asla saklanmaz.
+  last4        String
+  holderUserId String?
+  holder       User?    @relation(fields: [holderUserId], references: [id])
+  holderName   String
+  branchId     String?
+  branch       Branch?  @relation(fields: [branchId], references: [id])
+  creditLimit  Decimal? @db.Decimal(18, 2)
+  currency     String   @default("TRY")
+  statementDay Int?
+  dueDay       Int?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  transactions FinancialTransaction[]
+  statements   CardStatement[]
+  imports      ImportBatch[]
+
+  @@index([tenantId])
+}
+
+enum StatementStatus {
+  OPEN
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+}
+
+model CardStatement {
+  id             String          @id @default(cuid())
+  tenantId       String
+  cardAccountId  String
+  cardAccount    CardAccount     @relation(fields: [cardAccountId], references: [id])
+  periodStart    DateTime        @db.Date
+  periodEnd      DateTime        @db.Date
+  dueDate        DateTime        @db.Date
+  totalAmount    Decimal         @db.Decimal(18, 2)
+  minimumPayment Decimal?        @db.Decimal(18, 2)
+  paidAmount     Decimal         @default(0) @db.Decimal(18, 2)
+  currency       String          @default("TRY")
+  status         StatementStatus @default(ISSUED)
+  source         DataSource
+  createdAt      DateTime        @default(now())
+
+  transactions FinancialTransaction[]
+  matches      ReconciliationMatch[]
+
+  @@unique([tenantId, cardAccountId, periodEnd])
+}
+
+// ───────────────────────── Ortak finansal hareket ─────────────────────────
+
+enum TxnSourceType {
+  BANK
+  CARD
+  POS
+  MANUAL
+}
+
+enum TxnStatus {
+  PENDING // provizyon / bekleyen
+  POSTED // kesinleşmiş
+  REVERSED // iptal / ters kayıt
+}
+
+enum ReconStatus {
+  UNMATCHED
+  SUGGESTED
+  MATCHED
+  IGNORED
+}
+
+model FinancialTransaction {
+  id               String           @id @default(cuid())
+  tenantId         String
+  sourceType       TxnSourceType
+  dataSource       DataSource
+  // Kaynaktaki işlem kimliği (banka referansı, sağlayıcı ID'si vb.)
+  sourceRef        String?
+  // Mükerrerlik anahtarı: aynı tenant içinde benzersiz
+  dedupeKey        String
+  bankAccountId    String?
+  bankAccount      BankAccount?     @relation(fields: [bankAccountId], references: [id])
+  cardAccountId    String?
+  cardAccount      CardAccount?     @relation(fields: [cardAccountId], references: [id])
+  statementId      String?
+  statement        CardStatement?   @relation(fields: [statementId], references: [id])
+  importBatchId    String?
+  importBatch      ImportBatch?     @relation(fields: [importBatchId], references: [id])
+  // Hesabın/kartın şubesinden kopyalanır; şube filtresi için
+  branchId         String?
+  branch           Branch?          @relation(fields: [branchId], references: [id])
+  date             DateTime         @db.Date
+  description      String
+  counterpartyName String?
+  // İşaretli tutar: + giriş, - çıkış
+  amount           Decimal          @db.Decimal(18, 2)
+  currency         String           @default("TRY")
+  status           TxnStatus        @default(POSTED)
+  categoryId       String?
+  category         ExpenseCategory? @relation(fields: [categoryId], references: [id])
+  reconStatus      ReconStatus      @default(UNMATCHED)
+  note             String?
+  createdById      String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  expense   Expense?
+  documents Document[]
+  matches   ReconciliationMatch[]
+
+  @@unique([tenantId, dedupeKey])
+  @@index([tenantId, date])
+  @@index([tenantId, sourceType])
+}
+
+enum ImportStatus {
+  COMPLETED
+  FAILED
+}
+
+model ImportBatch {
+  id             String       @id @default(cuid())
+  tenantId       String
+  fileName       String
+  fileHash       String
+  documentId     String?
+  bankAccountId  String?
+  bankAccount    BankAccount? @relation(fields: [bankAccountId], references: [id])
+  cardAccountId  String?
+  cardAccount    CardAccount? @relation(fields: [cardAccountId], references: [id])
+  rowCount       Int
+  importedCount  Int
+  duplicateCount Int
+  errorCount     Int
+  errors         Json?
+  mapping        Json
+  status         ImportStatus
+  createdById    String
+  createdAt      DateTime     @default(now())
+
+  transactions FinancialTransaction[]
+
+  @@index([tenantId])
+}
+
+// ───────────────────────── Gider ─────────────────────────
+
+model ExpenseCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  // Açıklamaya göre kategori önerisi için anahtar kelimeler
+  keywords  String[]
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  expenses     Expense[]
+  transactions FinancialTransaction[]
+  budgets      Budget[]
+
+  @@unique([tenantId, name])
+}
+
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+model Expense {
+  id            String                @id @default(cuid())
+  tenantId      String
+  // Bir hareket en fazla bir kez gider yazılabilir
+  transactionId String?               @unique
+  transaction   FinancialTransaction? @relation(fields: [transactionId], references: [id])
+  submittedById String
+  categoryId    String
+  category      ExpenseCategory       @relation(fields: [categoryId], references: [id])
+  departmentId  String?
+  department    Department?           @relation(fields: [departmentId], references: [id])
+  costCenterId  String?
+  costCenter    CostCenter?           @relation(fields: [costCenterId], references: [id])
+  branchId      String?
+  branch        Branch?               @relation(fields: [branchId], references: [id])
+  project       String?
+  merchant      String?
+  description   String
+  date          DateTime              @db.Date
+  amount        Decimal               @db.Decimal(18, 2)
+  currency      String                @default("TRY")
+  status        ExpenseStatus         @default(SUBMITTED)
+  erpRef        String?
+  erpSyncedAt   DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  documents Document[]
+
+  @@index([tenantId, date])
+}
+
+enum DocumentKind {
+  RECEIPT
+  INVOICE
+  STATEMENT
+  BANK_RECEIPT
+  OTHER
+}
+
+model Document {
+  id            String                @id @default(cuid())
+  tenantId      String
+  kind          DocumentKind
+  fileName      String
+  mimeType      String
+  size          Int
+  sha256        String
+  // Şifreli depolamadaki anahtar (tenant klasörü altında)
+  storageKey    String
+  uploadedById  String
+  expenseId     String?
+  expense       Expense?              @relation(fields: [expenseId], references: [id])
+  invoiceId     String?
+  invoice       Invoice?              @relation(fields: [invoiceId], references: [id])
+  transactionId String?
+  transaction   FinancialTransaction? @relation(fields: [transactionId], references: [id])
+  createdAt     DateTime              @default(now())
+
+  @@index([tenantId])
+}
+
+// ───────────────────────── Cari, fatura, ödeme planı ─────────────────────────
+
+enum CounterpartyType {
+  CUSTOMER
+  SUPPLIER
+  BOTH
+}
+
+enum RecordOrigin {
+  ERP
+  MANUAL
+}
+
+model Counterparty {
+  id        String           @id @default(cuid())
+  tenantId  String
+  type      CounterpartyType
+  code      String
+  name      String
+  taxNumber String?
+  email     String?
+  phone     String?
+  origin    RecordOrigin     @default(MANUAL)
+  erpRef    String?
+  isActive  Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  invoices        Invoice[]
+  paymentRequests PaymentRequest[]
+  plannedPayments PlannedPayment[]
+
+  @@unique([tenantId, code])
+}
+
+enum InvoiceType {
+  SALES // satış: alacak
+  PURCHASE // alış: borç
+}
+
+enum InvoiceStatus {
+  OPEN
+  PARTIAL
+  PAID
+  CANCELLED
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  tenantId       String
+  type           InvoiceType
+  number         String
+  counterpartyId String
+  counterparty   Counterparty  @relation(fields: [counterpartyId], references: [id])
+  branchId       String?
+  branch         Branch?       @relation(fields: [branchId], references: [id])
+  issueDate      DateTime      @db.Date
+  dueDate        DateTime      @db.Date
+  total          Decimal       @db.Decimal(18, 2)
+  paidAmount     Decimal       @default(0) @db.Decimal(18, 2)
+  currency       String        @default("TRY")
+  status         InvoiceStatus @default(OPEN)
+  origin         RecordOrigin  @default(MANUAL)
+  erpRef         String?
+  description    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  documents       Document[]
+  paymentRequests PaymentRequest[]
+  plannedPayments PlannedPayment[]
+  matches         ReconciliationMatch[]
+
+  @@unique([tenantId, type, number])
+  @@index([tenantId, dueDate])
+}
+
+enum PlannedPaymentStatus {
+  PLANNED
+  PAID
+  CANCELLED
+}
+
+enum Recurrence {
+  NONE
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+// Tedarikçi ödemesi, kira, abonelik, vergi gibi yükümlülükler (ödeme takvimi)
+model PlannedPayment {
+  id             String               @id @default(cuid())
+  tenantId       String
+  title          String
+  category       String
+  counterpartyId String?
+  counterparty   Counterparty?        @relation(fields: [counterpartyId], references: [id])
+  invoiceId      String?
+  invoice        Invoice?             @relation(fields: [invoiceId], references: [id])
+  amount         Decimal              @db.Decimal(18, 2)
+  currency       String               @default("TRY")
+  dueDate        DateTime             @db.Date
+  recurrence     Recurrence           @default(NONE)
+  status         PlannedPaymentStatus @default(PLANNED)
+  paidAt         DateTime?
+  note           String?
+  createdAt      DateTime             @default(now())
+
+  matches ReconciliationMatch[]
+
+  @@index([tenantId, dueDate])
+}
+
+// ───────────────────────── Tahsilat / sanal POS ─────────────────────────
+
+model Terminal {
+  id             String   @id @default(cuid())
+  tenantId       String
+  provider       String
+  name           String
+  // Sağlayıcı kimlik bilgileri şifreli saklanır
+  configEnc      String
+  commissionRate Decimal  @default(0) @db.Decimal(6, 4)
+  isDefault      Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  requests PaymentRequest[]
+  attempts PaymentAttempt[]
+
+  @@index([tenantId])
+}
+
+enum PaymentRequestStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model PaymentRequest {
+  id             String               @id @default(cuid())
+  tenantId       String
+  // Herkese açık ödeme linkinde kullanılan tahmin edilemez anahtar
+  token          String               @unique
+  terminalId     String
+  terminal       Terminal             @relation(fields: [terminalId], references: [id])
+  counterpartyId String?
+  counterparty   Counterparty?        @relation(fields: [counterpartyId], references: [id])
+  invoiceId      String?
+  invoice        Invoice?             @relation(fields: [invoiceId], references: [id])
+  amount         Decimal              @db.Decimal(18, 2)
+  currency       String               @default("TRY")
+  description    String
+  customerEmail  String?
+  status         PaymentRequestStatus @default(PENDING)
+  expiresAt      DateTime
+  paidAt         DateTime?
+  erpRef         String?
+  erpSyncedAt    DateTime?
+  createdById    String
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  attempts PaymentAttempt[]
+
+  @@index([tenantId, createdAt])
+}
+
+enum AttemptStatus {
+  INITIATED
+  SUCCEEDED
+  FAILED
+}
+
+model PaymentAttempt {
+  id                String         @id @default(cuid())
+  tenantId          String
+  paymentRequestId  String
+  paymentRequest    PaymentRequest @relation(fields: [paymentRequestId], references: [id])
+  terminalId        String
+  terminal          Terminal       @relation(fields: [terminalId], references: [id])
+  // Sağlayıcı oturum / işlem referansı
+  providerSessionId String         @unique
+  providerPaymentId String?        @unique
+  status            AttemptStatus  @default(INITIATED)
+  amount            Decimal        @db.Decimal(18, 2)
+  commission        Decimal        @default(0) @db.Decimal(18, 2)
+  currency          String         @default("TRY")
+  cardLast4         String?
+  cardBrand         String?
+  threeDSecure      Boolean        @default(false)
+  errorCode         String?
+  errorMessage      String?
+  completedAt       DateTime?
+  createdAt         DateTime       @default(now())
+
+  refunds Refund[]
+  matches ReconciliationMatch[]
+
+  @@index([tenantId, createdAt])
+}
+
+enum RefundStatus {
+  SUCCEEDED
+  FAILED
+}
+
+model Refund {
+  id               String         @id @default(cuid())
+  tenantId         String
+  attemptId        String
+  attempt          PaymentAttempt @relation(fields: [attemptId], references: [id])
+  amount           Decimal        @db.Decimal(18, 2)
+  reason           String?
+  status           RefundStatus
+  providerRefundId String?        @unique
+  createdById      String
+  createdAt        DateTime       @default(now())
+
+  @@index([tenantId])
+}
+
+model WebhookEvent {
+  id             String    @id @default(cuid())
+  tenantId       String?
+  provider       String
+  eventId        String
+  type           String
+  payload        Json
+  signatureValid Boolean
+  processedAt    DateTime?
+  error          String?
+  receivedAt     DateTime  @default(now())
+
+  // Aynı olay tekrar gelirse ikinci kez işlenmez
+  @@unique([provider, eventId])
+}
+
+// ───────────────────────── ERP ─────────────────────────
+
+model ErpConnection {
+  id         String           @id @default(cuid())
+  tenantId   String
+  provider   String
+  name       String
+  configEnc  String
+  status     ConnectionStatus @default(ACTIVE)
+  lastSyncAt DateTime?
+  lastError  String?
+  createdAt  DateTime         @default(now())
+
+  jobs SyncJob[]
+
+  @@index([tenantId])
+}
+
+enum SyncJobType {
+  PULL_COUNTERPARTIES
+  PULL_INVOICES
+  PUSH_PAYMENTS
+  PUSH_EXPENSES
+  BANK_SYNC
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model SyncJob {
+  id               String          @id @default(cuid())
+  tenantId         String
+  // İş ya bir ERP bağlantısına ya da bir banka bağlantısına aittir
+  connectionId     String?
+  connection       ErpConnection?  @relation(fields: [connectionId], references: [id])
+  bankConnectionId String?
+  bankConnection   BankConnection? @relation(fields: [bankConnectionId], references: [id])
+  type             SyncJobType
+  status           JobStatus       @default(QUEUED)
+  attempts         Int             @default(0)
+  maxAttempts      Int             @default(3)
+  runAfter         DateTime        @default(now())
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  stats            Json?
+  lastError        String?
+  // Kalıcı hata: tekrar denemek anlamsız (ör. yetki hatası)
+  permanent        Boolean         @default(false)
+  createdById      String?
+  createdAt        DateTime        @default(now())
+
+  @@index([status, runAfter])
+  @@index([tenantId, createdAt])
+}
+
+// ───────────────────────── Mutabakat ─────────────────────────
+
+enum MatchType {
+  TXN_INVOICE // banka hareketi ↔ fatura
+  TXN_POS // banka hareketi ↔ POS tahsilatı
+  TXN_PLANNED // banka hareketi ↔ planlı ödeme
+  TXN_STATEMENT // banka hareketi ↔ kart ekstresi ödemesi
+  POS_INVOICE // POS tahsilatı ↔ fatura
+}
+
+enum MatchStatus {
+  SUGGESTED
+  CONFIRMED
+  REJECTED
+}
+
+model ReconciliationMatch {
+  id               String                @id @default(cuid())
+  tenantId         String
+  type             MatchType
+  status           MatchStatus           @default(SUGGESTED)
+  transactionId    String?
+  transaction      FinancialTransaction? @relation(fields: [transactionId], references: [id])
+  invoiceId        String?
+  invoice          Invoice?              @relation(fields: [invoiceId], references: [id])
+  attemptId        String?
+  attempt          PaymentAttempt?       @relation(fields: [attemptId], references: [id])
+  plannedPaymentId String?
+  plannedPayment   PlannedPayment?       @relation(fields: [plannedPaymentId], references: [id])
+  statementId      String?
+  statement        CardStatement?        @relation(fields: [statementId], references: [id])
+  // Kaynaklar arası tutar farkı (0 = tam eşleşme)
+  difference       Decimal               @default(0) @db.Decimal(18, 2)
+  score            Int                   @default(0)
+  reason           String?
+  decidedById      String?
+  decidedAt        DateTime?
+  createdAt        DateTime              @default(now())
+
+  @@index([tenantId, status])
+}
+
+// ───────────────────────── Bütçe ve onay ─────────────────────────
+
+// Aylık bütçe: kategori, departman veya ikisinin kesişimi için tanımlanır.
+model Budget {
+  id             String           @id @default(cuid())
+  tenantId       String
+  period         String // YYYY-MM
+  categoryId     String?
+  category       ExpenseCategory? @relation(fields: [categoryId], references: [id])
+  departmentId   String?
+  department     Department?      @relation(fields: [departmentId], references: [id])
+  amount         Decimal          @db.Decimal(18, 2)
+  currency       String           @default("TRY")
+  // Gerçekleşen / bütçe oranı bu eşiği geçince uyarı üretilir
+  alertThreshold Decimal          @default(0.8) @db.Decimal(4, 2)
+  note           String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([tenantId, period])
+}
+
+// Tutar aralığına göre gideri kimin onaylayabileceğini belirler. En yüksek eşleşen minAmount geçerlidir.
+model ApprovalRule {
+  id            String   @id @default(cuid())
+  tenantId      String
+  name          String
+  minAmount     Decimal  @db.Decimal(18, 2)
+  approverRoles Role[]
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+// ───────────────────────── Bildirim ─────────────────────────
+
+model Notification {
+  id        String    @id @default(cuid())
+  tenantId  String
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  type      String
+  title     String
+  body      String?
+  link      String?
+  // Aynı olay için aynı kullanıcıya ikinci bildirim gönderilmez
+  dedupeKey String
+  readAt    DateTime?
+  emailedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([tenantId, userId, dedupeKey])
+  @@index([tenantId, userId, readAt])
+}
+
+// ───────────────────────── Denetim izi ─────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  userId     String?
+  userEmail  String?
+  action     String
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, entityType, entityId])
+}

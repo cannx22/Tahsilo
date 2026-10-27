@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.next
+**/.env
+.env.production
+.pgdata
+.pgdata.log
+backups
+apps/api/storage
+apps/api/storage-test
+.git
+coverage

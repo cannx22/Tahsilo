@@ -1,0 +1,13 @@
+node_modules
+dist
+.next
+.env
+*.log
+apps/api/storage
+coverage
+.pgdata
+.pgdata.log
+apps/api/storage-test
+.env.production
+backups
+*.tsbuildinfo
