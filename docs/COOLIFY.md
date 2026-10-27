@@ -12,15 +12,23 @@ Tahsilo, Coolify'ın **Docker Compose** kurulum tipiyle tek seferde ayağa kalka
 
 ## 2. Alan adı
 
+### Kendi alan adınız yoksa (Coolify'ın verdiği adres)
+
+**web** servisinin **Domains** alanını olduğu gibi bırakın. Coolify, `http://web-xxxx.SUNUCU-IP.sslip.io` gibi bir adres üretir. Boşsa **Generate Domain** düğmesine basın. Uygulama bu adresi kendiliğinden tanır: oturum çerezleri, ödeme dönüşleri ve banka izin dönüşleri bu adrese göre ayarlanır.
+
+> Bu geçici adres **HTTPS değildir**; trafik şifrelenmeden gider. Deneme ve tanıtım için uygundur. Gerçek finans verisi girmeden önce kendi alan adınıza geçin.
+
+### Kendi alan adınız olduğunda
+
 **web** servisinin **Domains** alanına alan adınızı **port ile** yazın:
 
 ```
 https://tahsilo.firma.com:3000
 ```
 
-Buradaki `:3000` konteyner portudur; kullanıcılar adresi portsuz açar. Coolify HTTPS sertifikasını Let's Encrypt ile kendisi alır. Alan adınızın DNS kaydı (A kaydı) Coolify sunucusunun IP adresini göstermeli.
+Buradaki `:3000` konteyner portudur; kullanıcılar adresi portsuz açar. Coolify HTTPS sertifikasını Let's Encrypt ile kendisi alır. Alan adının DNS A kaydı Coolify sunucusunun IP adresini göstermeli. Değişiklikten sonra **Redeploy** yapın.
 
-`api` ve `db` servislerine alan adı **vermeyin**.
+Her iki durumda da `api` ve `db` servislerine alan adı **vermeyin**.
 
 ## 3. Ortam değişkenleri
 
@@ -28,7 +36,7 @@ Buradaki `:3000` konteyner portudur; kullanıcılar adresi portsuz açar. Coolif
 
 | Değişken | Ne işe yarar |
 |---|---|
-| `SERVICE_FQDN_WEB` | Web alan adınız. Ödeme dönüşleri, banka izin dönüşleri ve webhook'lar bu adresi kullanır |
+| `SERVICE_URL_WEB` / `SERVICE_FQDN_WEB` | Web adresiniz. Ödeme dönüşleri, banka izin dönüşleri ve oturum çerezleri bu adrese göre ayarlanır |
 | `SERVICE_PASSWORD_POSTGRES` | Veritabanı parolası |
 | `SERVICE_PASSWORD_64_JWT` | Oturum imzalama anahtarı |
 | `SERVICE_PASSWORD_64_ENCRYPTION` | Belge ve bağlantı sırlarının şifreleme anahtarı |
@@ -85,6 +93,5 @@ Depoya her push'tan sonra Coolify'da **Redeploy** yapın. İsterseniz **Webhooks
 | Belirti | Kontrol |
 |---|---|
 | `web` açılmıyor, 502 | `api` sağlıklı mı? `api` loglarında `Tahsilo API` satırı ve migration çıktısı görünmeli |
-| Giriş yapınca hemen çıkış oluyor | Alan adı HTTPS ile mi açılıyor? Üretimde oturum çerezi yalnızca HTTPS'te gönderilir |
-| Ödeme veya banka izninden sonra yanlış adrese dönüyor | `SERVICE_FQDN_WEB` değeri gerçek alan adınız mı? |
+| Giriş yapınca tekrar giriş ekranına dönüyor veya ödeme dönüşü yanlış adrese gidiyor | **api** servisinin loglarında `Tahsilo API` satırının üstündeki adres, tarayıcıda açtığınız adresle aynı mı? Değilse Coolify'da **api** servisine `WEB_URL` değişkenini tarayıcıdaki tam adresle (örn. `http://web-xxxx.1.2.3.4.sslip.io`) ekleyip Redeploy yapın |
 | `ENCRYPTION_KEY en az 32 karakter` hatası | `SERVICE_PASSWORD_64_ENCRYPTION` boş kalmış; Coolify'da değeri üretin veya elle 32+ karakter girin |

@@ -19,7 +19,7 @@ import * as bcrypt from 'bcryptjs';
 import { IsEmail, IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import type { Request, Response } from 'express';
 import { Public } from '../common/decorators';
-import { RequestContext } from '../common/request-context';
+import { RequestContext, secureCookies } from '../common/request-context';
 import { PrismaService } from '../prisma/prisma.service';
 
 export const PLATFORM_COOKIE = 'tahsilo_platform';
@@ -87,7 +87,7 @@ export class PlatformController {
     await this.prisma.raw.platformUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     await this.log('platform.login', 'PlatformUser', user.id, null, user.email);
     const token = await this.jwt.signAsync({ sub: user.id, scope: 'platform' }, { expiresIn: '4h' });
-    res.cookie(PLATFORM_COOKIE, token, { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 4 * 3600_000, path: '/' });
+    res.cookie(PLATFORM_COOKIE, token, { httpOnly: true, sameSite: 'strict', secure: secureCookies(), maxAge: 4 * 3600_000, path: '/' });
     return { id: user.id, email: user.email, name: user.name };
   }
 

@@ -32,9 +32,13 @@ services:
       NODE_ENV: production
       PORT: "4000"
       DATABASE_URL: postgresql://tahsilo:${SERVICE_PASSWORD_POSTGRES}@db:5432/tahsilo?schema=public
-      # Ödeme/banka dönüş adresleri ve webhook'lar web alan adı üzerinden gelir
-      WEB_URL: ${SERVICE_FQDN_WEB}
-      API_URL: ${SERVICE_FQDN_WEB}
+      # Ödeme/banka dönüş adresleri ve webhook'lar web alan adı üzerinden gelir.
+      # Coolify şemalı adresi (SERVICE_URL_WEB) veya yalnızca alan adını (SERVICE_FQDN_WEB) verir; uygulama ikisini de tanır.
+      # Gerekirse Coolify arayüzünde WEB_URL değerini elle (örn. http://xxx.sslip.io) girebilirsiniz.
+      WEB_URL: ${SERVICE_URL_WEB}
+      WEB_FQDN: ${SERVICE_FQDN_WEB}
+      # Sandbox POS aynı konteynerde çalışır; webhook'u dış adres yerine doğrudan iç adrese gönderir
+      WEBHOOK_BASE_URL: http://127.0.0.1:4000
       JWT_SECRET: ${SERVICE_PASSWORD_64_JWT}
       # DİKKAT: Bu değer kaybolursa şifreli belgeler ve bağlantı sırları açılamaz. Coolify'dan kopyalayıp ayrıca saklayın.
       ENCRYPTION_KEY: ${SERVICE_PASSWORD_64_ENCRYPTION}

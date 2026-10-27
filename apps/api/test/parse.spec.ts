@@ -1,3 +1,4 @@
+import { resolvePublicUrls, toPublicUrl } from '../src/main';
 import { CryptoService } from '../src/common/crypto.service';
 import { base32Encode, totp, verifyTotp } from '../src/auth/totp';
 import { withDedupeKeys } from '../src/imports/imports.service';
@@ -85,5 +86,17 @@ describe('şifreleme anahtarı', () => {
     expect(CryptoService.deriveKey(b64).equals(Buffer.from(b64, 'base64'))).toBe(true);
     expect(CryptoService.deriveKey('x'.repeat(64))).toHaveLength(32);
     expect(() => CryptoService.deriveKey('kisa')).toThrow();
+  });
+});
+
+describe('genel adres çözümü', () => {
+  it('Coolify adreslerini doğru şemayla tamamlar', () => {
+    expect(toPublicUrl('app-x.1.2.3.4.sslip.io')).toBe('http://app-x.1.2.3.4.sslip.io');
+    expect(toPublicUrl('tahsilo.firma.com/')).toBe('https://tahsilo.firma.com');
+    expect(toPublicUrl('http://app.sslip.io/')).toBe('http://app.sslip.io');
+    expect(toPublicUrl('localhost:3100')).toBe('http://localhost:3100');
+    const env: NodeJS.ProcessEnv = { WEB_URL: '', WEB_FQDN: 'abc.10.0.0.5.sslip.io' };
+    resolvePublicUrls(env);
+    expect(env).toMatchObject({ WEB_URL: 'http://abc.10.0.0.5.sslip.io', API_URL: 'http://abc.10.0.0.5.sslip.io' });
   });
 });

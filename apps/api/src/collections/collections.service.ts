@@ -69,7 +69,9 @@ export class CollectionsService {
       const adapter = this.adapter(req.terminal.provider);
       const attemptId = `att_${CryptoService.token(12)}`;
       const web = process.env.WEB_URL ?? 'http://localhost:3000';
-      const api = process.env.API_URL ?? 'http://localhost:4000';
+      // Webhook'lar sağlayıcıdan sunucuya gelir. Gerçek sağlayıcıda public adres (API_URL) kullanılır;
+      // aynı konteynerde çalışan sandbox sağlayıcı için WEBHOOK_BASE_URL ile iç adres verilebilir.
+      const api = process.env.WEBHOOK_BASE_URL ?? process.env.API_URL ?? 'http://localhost:4000';
       const checkout = await adapter.createCheckout({
         config: this.crypto.decryptJson(req.terminal.configEnc),
         orderId: attemptId,

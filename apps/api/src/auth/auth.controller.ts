@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { SESSION_COOKIE } from '../common/auth.guard';
 import { AuthUser, CurrentUser, Public } from '../common/decorators';
+import { secureCookies } from '../common/request-context';
 import { ChangePasswordDto, LoginDto, MfaCodeDto, MfaDisableDto, MfaVerifyDto, PreferencesDto, RegisterDto } from './auth.dto';
 import { AuthService } from './auth.service';
 
@@ -87,7 +88,7 @@ export class AuthController {
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: secureCookies(),
       maxAge: COOKIE_MAX_AGE,
       path: '/',
     });

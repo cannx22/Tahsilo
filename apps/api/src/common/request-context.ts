@@ -44,3 +44,11 @@ export function branchFilter() {
   const branchId = als.getStore()?.branchId;
   return branchId ? Prisma.sql`AND "branchId" = ${branchId}` : Prisma.empty;
 }
+
+/**
+ * Oturum çerezlerinin "Secure" olup olmayacağı: kullanıcıların açtığı adres HTTPS ise evet.
+ * Coolify'ın ürettiği http://...sslip.io gibi geçici adreslerde Secure çerez tarayıcıda saklanmaz.
+ */
+export function secureCookies() {
+  return (process.env.WEB_URL ?? '').startsWith('https://');
+}
